@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>턴제 택틱스 드래그 전투 시스템</title>
+    <!-- Tailwind CSS 로드 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome 아이콘 로드 -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .character-card {
+            transition: all 0.2s ease-in-out;
+        }
+        .character-card.dragging {
+            opacity: 0.4;
+            transform: scale(0.95);
+        }
+        .drop-target {
+            border-color: #ef4444 !important;
+            background-color: rgba(239, 68, 68, 0.15) !important;
+            transform: scale(1.03);
+        }
+        @keyframes hitEffect {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.08) rotate(2deg); filter: brightness(1.5); }
+            100% { transform: scale(1); }
+        }
+        .hit-animation {
+            animation: hitEffect 0.3s ease-in-out;
+        }
+        @keyframes floatUp {
+            0% { transform: translateY(0) scale(1); opacity: 1; }
+            100% { transform: translateY(-40px) scale(1.2); opacity: 0; }
+        }
+        .damage-popup {
+            position: absolute;
+            font-weight: 900;
+            font-size: 1.25rem;
+            pointer-events: none;
+            z-index: 100;
+            animation: floatUp 0.8s ease-out forwards;
+        }
+        .damage-popup.damage { color: #f87171; text-shadow: 0 0 4px rgba(0,0,0,0.8); }
+        .damage-popup.heal { color: #34d399; text-shadow: 0 0 4px rgba(0,0,0,0.8); }
+        .damage-popup.buff { color: #60a5fa; text-shadow: 0 0 4px rgba(0,0,0,0.8); }
+        .damage-popup.ultimate { color: #fbbf24; text-shadow: 0 0 6px rgba(0,0,0,0.9); font-size: 1.5rem; }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 font-sans min-h-screen flex flex-col items-center justify-between p-4 md:p-6 select-none">
+    
+    <!-- 상단 헤더 및 턴/스테이지 정보 -->
+    <header class="w-full max-w-6xl flex flex-col sm:flex-row items-center justify-between bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-xl mb-4 gap-4">
+        <div class="flex items-center gap-3">
+            <div class="bg-indigo-600 text-white p-2.5 rounded-xl text-xl shadow-lg">
+                <i class="fa-solid fa-gamepad"></i>
+            </div>
+            <div>
+                <h1 id="stage-title-header" class="text-lg md:text-xl font-extrabold tracking-tight text-white">스테이지 1: 부대 전투</h1>
+                <p class="text-xs text-slate-400">행동(공격/버프) 시 게이지가 차오릅니다(3회). 게이지가 가득 차면 강력한 궁극기 발동 가능!</p>
+            </div>
+        </div>
+        <div class="flex items-center gap-4">
+            <div id="turn-display" class="font-bold text-amber-400 text-sm md:text-base px-4 py-2 bg-slate-950 rounded-xl border border-slate-800 shadow-inner">
+                아군 턴 (Turn 1)
+            </div>
+            <button onclick="endTurn()" id="end-turn-btn" class="px-5 py-2.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white text-sm font-bold rounded-xl shadow-lg transition transform active:scale-95">
+                턴 종료 ➔
+            </button>
+        </div>
+    </header>
+
+    <!-- 메인 전장 영역 (세로 배치 레이아웃: 적이 위, 아군이 아래 -> 위로 드래그) -->
+    <main class="w-full max-w-4xl flex flex-col gap-6 mb-4 items-center">
+        
+        <!-- 적군 영역 (상단) -->
+        <section class="w-full bg-slate-900/80 backdrop-blur border border-slate-800/80 rounded-2xl p-4 shadow-xl">
+            <div class="flex items-center justify-between mb-3 border-b border-slate-800 pb-2">
+                <h2 id="enemy-section-title" class="text-base font-bold text-red-400 flex items-center gap-2">
+                    <i class="fa-solid fa-skull"></i> 적군 부대 (3인)
+                </h2>
+                <span class="text-xs text-slate-400">공격 목표 지점 (아군을 위로 드래그)</span>
+            </div>
+            <div id="enemy-container" class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <!-- 동적 렌더링 -->
+            </div>
+        </section>
+
+        <!-- VS 중앙 구분선 -->
+        <div class="w-full flex items-center justify-center gap-4 my-1">
+            <div class="h-px bg-slate-800 flex-1"></div>
+            <span class="text-xs font-bold px-3 py-1 bg-slate-900 border border-slate-800 rounded-full text-slate-400 uppercase tracking-widest">▲ 위로 드래그하여 공격 ▲</span>
+            <div class="h-px bg-slate-800 flex-1"></div>
+        </div>
+
+        <!-- 아군 영역 (하단) -->
+        <section class="w-full bg-slate-900/80 backdrop-blur border border-slate-800/80 rounded-2xl p-4 shadow-xl">
+            <div class="flex items-center justify-between mb-3 border-b border-slate-800 pb-2">
+                <h2 class="text-base font-bold text-emerald-400 flex items-center gap-2">
+                    <i class="fa-solid fa-shield-halved"></i> 아군 부대 (3인)
+                </h2>
+                <span class="text-xs text-slate-400">적에게 위로 드래그 / 클릭하여 아군 버프·치유</span>
+            </div>
+            <div id="ally-container" class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <!-- 동적 렌더링 -->
+            </div>
+        </section>
+
+    </main>
+
+    <!-- 전투 로그 박스 -->
+    <footer class="w-full max-w-6xl bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-xl flex flex-col h-28">
+        <div class="text-xs font-bold text-slate-400 mb-2 flex items-center gap-2 border-b border-slate-800 pb-1">
+            <i class="fa-solid fa-terminal"></i> 전투 로그
+        </div>
+        <div id="battle-log" class="flex-1 overflow-y-auto space-y-1 text-xs font-mono scrollbar-thin scrollbar-thumb-slate-700">
+            <!-- 로그 기록 -->
+        </div>
+    </footer>
+
+    <!-- 결과 및 스테이지 이동 모달 -->
+    <div id="result-modal" class="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center hidden z-50 p-4">
+        <div class="bg-slate-900 border border-slate-700 rounded-2xl p-6 max-w-sm w-full text-center shadow-2xl space-y-4">
+            <div id="modal-icon" class="text-6xl">🏆</div>
+            <h2 id="modal-title" class="text-2xl font-black">승리했습니다!</h2>
+            <p id="modal-message" class="text-slate-300 text-sm">모든 적을 처치했습니다.</p>
+            <div id="modal-buttons" class="space-y-2">
+                <button onclick="initGame(1)" class="w-full py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-xl shadow-lg transition">
+                    새 게임 시작
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 게임 시스템 스크립트 -->
+    <script>
+        // --- 게임 상태 객체 ---
+        let gameState = {
+            currentTurn: 'ALLY',
+            turnNumber: 1,
+            isProcessing: false,
+            stage: 1, // 1: 일반 적 3명, 2: 보스전
+            allies: [],
+            enemies: []
+        };
+
+        // --- 초기 아군 템플릿 ---
+        const ALLY_TEMPLATES = [
+            {
+                id: 'ally-warrior',
+                name: '전사 (Warrior)',
+                job: 'warrior',
+                maxHp: 130,
+                hp: 130,
+                atk: 20,
+                baseAtk: 20,
+                def: 10,
+                baseDef: 10,
+                skillName: '기본: 철벽 방어 (방어+6, 3턴)',
+                ultimateName: '🔥 궁극기: 전사의 함성 (아군 전체 방어 +15)',
+                ultimateGauge: 0,
+                maxGauge: 3,
+                icon: 'fa-shield-cat',
+                color: 'from-amber-600 to-orange-700',
+                border: 'border-amber-500',
+                hasActed: false,
+                buffTurns: 0
+            },
+            {
+                id: 'ally-mage',
+                name: '마법사 (Mage)',
+                job: 'mage',
+                maxHp: 80,
+                hp: 80,
+                atk: 30,
+                baseAtk: 30,
+                def: 3,
+                baseDef: 3,
+                skillName: '기본: 치유 마법 (HP 35 회복)',
+                ultimateName: '🔥 궁극기: 폭발 (모든 적에게 거대한 피해)',
+                ultimateGauge: 0,
+                maxGauge: 3,
+                icon: 'fa-wand-magic-sparkles',
+                color: 'from-purple-600 to-indigo-700',
+                border: 'border-purple-500',
+                hasActed: false,
+                buffTurns: 0
+            },
+            {
+                id: 'ally-archer',
+                name: '궁수 (Archer)',
+                job: 'archer',
+                maxHp: 95,
+                hp: 95,
+                atk: 25,
+                baseAtk: 25,
+                def: 5,
+                baseDef: 5,
+                skillName: '기본: 집중 사격 (공격+9, 3턴)',
+                ultimateName: '🔥 궁극기: 저격 (단일 적에게 치명타 피해)',
+                ultimateGauge: 0,
+                maxGauge: 3,
+                icon: 'fa-bow-arrow',
+                color: 'from-emerald-600 to-teal-700',
+                border: 'border-emerald-500',
+                hasActed: false,
+                buffTurns: 0
+            }
+        ];
+
+        // 적 템플릿 (스테이지 1)
+        const ENEMY_TEMPLATES_STAGE1 = [
+            { id: 'enemy-1', name: '적 전사 A', job: 'warrior', maxHp: 90, hp: 90, atk: 16, def: 6, icon: 'fa-skull-crossbones' },
+            { id: 'enemy-2', name: '적 전사 B', job: 'warrior', maxHp: 90, hp: 90, atk: 16, def: 6, icon: 'fa-skull-crossbones' },
+            { id: 'enemy-3', name: '적 전사 C', job: 'warrior', maxHp: 90, hp: 90, atk: 16, def: 6, icon: 'fa-skull-crossbones' }
+        ];
+
+        // 보스 템플릿 (스테이지 2) - 가로 배치 시 중앙에 돋보이도록 설정
+        const BOSS_TEMPLATE = [
+            { id: 'boss-1', name: '암흑 군주 (Boss)', job: 'boss', maxHp: 320, hp: 320, atk: 32, def: 12, icon: 'fa-dragon' }
+        ];
+
+        let selectedSkillCaster = null;
+        let draggedAllyId = null;
+
+        // --- 게임 초기화 및 재시작 ---
+        function initGame(targetStage = 1) {
+            gameState.stage = targetStage;
+            gameState.currentTurn = 'ALLY';
+            gameState.turnNumber = 1;
+            gameState.isProcessing = false;
+            selectedSkillCaster = null;
+
+            if (targetStage === 1) {
+                gameState.allies = JSON.parse(JSON.stringify(ALLY_TEMPLATES));
+                document.getElementById('battle-log').innerHTML = '';
+                addLog('⚔️ 전투가 시작되었습니다! 아군을 드래그해 적을 공격하거나, 아군을 클릭해 기본 스킬 및 궁극기(게이지 3 필요)를 사용하세요.', 'text-amber-400 font-bold');
+            } else {
+                gameState.allies.forEach(a => {
+                    a.hasActed = false;
+                    a.buffTurns = 0;
+                    a.atk = a.baseAtk;
+                    a.def = a.baseDef;
+                });
+                addLog('🔥 <b>스테이지 2 (보스전)</b>이 시작되었습니다! 거대한 암흑 군주가 나타났습니다!', 'text-red-400 font-bold');
+            }
+
+            gameState.enemies = targetStage === 1 
+                ? JSON.parse(JSON.stringify(ENEMY_TEMPLATES_STAGE1)) 
+                : JSON.parse(JSON.stringify(BOSS_TEMPLATE));
+
+            document.getElementById('result-modal').classList.add('hidden');
+            updateUI();
+        }
+
+        // --- UI 갱신 함수 ---
+        function updateUI() {
+            const stageHeader = document.getElementById('stage-title-header');
+            const enemyTitle = document.getElementById('enemy-section-title');
+            const enemyContainer = document.getElementById('enemy-container');
+
+            if (gameState.stage === 1) {
+                stageHeader.innerText = '스테이지 1: 적 전사 부대 소탕';
+                enemyTitle.innerHTML = '<i class="fa-solid fa-skull"></i> 적군 부대 (전사 3인)';
+                enemyContainer.className = 'grid grid-cols-1 sm:grid-cols-3 gap-4';
+            } else {
+                stageHeader.innerText = '스테이지 2: 보스 토벌전';
+                enemyTitle.innerHTML = '<i class="fa-solid fa-dragon text-red-500"></i> 보스 적군 (암흑 군주)';
+                enemyContainer.className = 'grid grid-cols-1 max-w-md mx-auto gap-4';
+            }
+
+            // 턴 표시
+            const turnDisplay = document.getElementById('turn-display');
+            if (gameState.currentTurn === 'ALLY') {
+                turnDisplay.innerText = `아군 턴 (Turn ${gameState.turnNumber})`;
+                turnDisplay.className = 'font-bold text-amber-400 text-sm md:text-base px-4 py-2 bg-slate-950 rounded-xl border border-slate-800 shadow-inner';
+            } else {
+                turnDisplay.innerText = `적군 턴 (Turn ${gameState.turnNumber})`;
+                turnDisplay.className = 'font-bold text-red-400 text-sm md:text-base px-4 py-2 bg-slate-950 rounded-xl border border-slate-800 shadow-inner';
+            }
+
+            // 아군 리스트 렌더링
+            const allyContainer = document.getElementById('ally-container');
+            allyContainer.innerHTML = '';
+            gameState.allies.forEach(ally => {
+                const isDead = ally.hp <= 0;
+                const canAct = !isDead && !ally.hasActed && gameState.currentTurn === 'ALLY';
+                const isSelected = selectedSkillCaster && selectedSkillCaster.id === ally.id;
+                const isUltimateReady = ally.ultimateGauge >= ally.maxGauge;
+
+                const card = document.createElement('div');
+                card.id = ally.id;
+                card.className = `character-card relative bg-slate-900 border-2 ${isSelected ? 'ring-4 ring-amber-400 border-amber-400' : (isUltimateReady ? 'border-amber-400 animate-pulse' : ally.border)} rounded-xl p-4 shadow-md flex flex-col justify-between ${isDead ? 'opacity-40 grayscale' : ''} ${canAct ? 'cursor-pointer hover:-translate-y-1' : ''}`;
+
+                if (canAct) {
+                    card.setAttribute('draggable', 'true');
+                    card.addEventListener('dragstart', handleDragStart);
+                    card.addEventListener('dragend', handleDragEnd);
+                } else {
+                    card.setAttribute('draggable', 'false');
+                }
+
+                card.onclick = () => handleAllyClick(ally.id);
+
+                const isBuffedAtk = ally.atk > ally.baseAtk;
+                const isBuffedDef = ally.def > ally.baseDef;
+
+                card.innerHTML = `
+                    ${ally.hasActed && !isDead ? '<span class="absolute top-2 right-2 bg-slate-800 text-slate-400 text-xs px-2 py-0.5 rounded border border-slate-700">행동완료</span>' : ''}
+                    <div class="flex items-center gap-3 mb-2">
+                        <div class="w-12 h-12 rounded-lg bg-gradient-to-br ${ally.color} flex items-center justify-center text-white text-xl shadow-inner flex-shrink-0">
+                            <i class="fa-solid ${ally.icon}"></i>
+                        </div>
+                        <div class="overflow-hidden">
+                            <h3 class="font-bold text-sm text-slate-100 truncate">${ally.name}</h3>
+                            <div class="text-xs text-slate-400">
+                                공격: <span class="${isBuffedAtk ? 'text-amber-400 font-bold' : ''}">${ally.atk}</span> ${ally.buffTurns > 0 && ally.job === 'archer' ? `(${ally.buffTurns}턴)` : ''} | 
+                                방어: <span class="${isBuffedDef ? 'text-blue-400 font-bold' : ''}">${ally.def}</span> ${ally.buffTurns > 0 && ally.job === 'warrior' ? `(${ally.buffTurns}턴)` : ''}
+                            </div>
+                        </div>
+                    </div>
+                    <div class="text-xs bg-slate-950/60 p-1.5 rounded border border-slate-800 text-slate-300 mb-2 truncate">
+                        ${isUltimateReady ? `<span class="text-amber-400 font-bold">⭐ [궁극기 가능] ${ally.ultimateName}</span>` : `✨ ${ally.skillName}`}
+                    </div>
+                    <!-- 궁극기 게이지바 -->
+                    <div class="mb-2">
+                        <div class="flex justify-between text-xs mb-1">
+                            <span class="text-slate-400">행동 게이지 (궁극기)</span>
+                            <span class="font-bold ${isUltimateReady ? 'text-amber-400 animate-bounce' : 'text-indigo-400'}">${ally.ultimateGauge} / ${ally.maxGauge}</span>
+                        </div>
+                        <div class="w-full bg-slate-800 rounded-full h-2 overflow-hidden border border-slate-700">
+                            <div class="${isUltimateReady ? 'bg-gradient-to-r from-amber-500 to-yellow-300' : 'bg-indigo-500'} h-2 rounded-full transition-all duration-300" style="width: ${(ally.ultimateGauge / ally.maxGauge) * 100}%"></div>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="flex justify-between text-xs mb-1">
+                            <span class="text-slate-400">체력 (HP)</span>
+                            <span class="font-bold ${ally.hp > 0 ? 'text-emerald-400' : 'text-red-500'}">${Math.max(0, ally.hp)} / ${ally.maxHp}</span>
+                        </div>
+                        <div class="w-full bg-slate-800 rounded-full h-2.5 overflow-hidden border border-slate-700">
+                            <div class="bg-emerald-500 h-2.5 rounded-full transition-all duration-300" style="width: ${Math.max(0, (ally.hp / ally.maxHp) * 100)}%"></div>
+                        </div>
+                    </div>
+                `;
+                allyContainer.appendChild(card);
+            });
+
+            // 적군 리스트 렌더링
+            enemyContainer.innerHTML = '';
+            gameState.enemies.forEach(enemy => {
+                const isDead = enemy.hp <= 0;
+                const isBoss = enemy.job === 'boss';
+
+                const card = document.createElement('div');
+                card.id = enemy.id;
+                card.className = `character-card relative bg-slate-900 border-2 ${isBoss ? 'border-red-500 bg-red-950/30' : 'border-red-900/60'} rounded-xl p-4 shadow-md flex flex-col justify-between ${isDead ? 'opacity-30 grayscale' : ''}`;
+
+                if (!isDead) {
+                    card.addEventListener('dragover', handleDragOver);
+                    card.addEventListener('dragenter', handleDragEnter);
+                    card.addEventListener('dragleave', handleDragleave);
+                    card.addEventListener('drop', handleDrop);
+                }
+
+                card.innerHTML = `
+                    <div class="flex items-center gap-3 mb-2">
+                        <div class="w-12 h-12 rounded-lg bg-gradient-to-br ${isBoss ? 'from-red-600 to-purple-900' : 'from-red-800 to-red-950'} flex items-center justify-center text-red-200 text-xl shadow-inner border border-red-700/50 flex-shrink-0">
+                            <i class="fa-solid ${enemy.icon}"></i>
+                        </div>
+                        <div class="overflow-hidden">
+                            <h3 class="font-bold text-sm ${isBoss ? 'text-red-400 font-extrabold text-base' : 'text-red-300'} truncate">${enemy.name}</h3>
+                            <div class="text-xs text-slate-400">
+                                공격: <span>${enemy.atk}</span> | 방어: <span>${enemy.def}</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mt-2">
+                        <div class="flex justify-between text-xs mb-1">
+                            <span class="text-slate-400">체력 (HP)</span>
+                            <span class="font-bold ${enemy.hp > 0 ? 'text-red-400' : 'text-slate-600'}">${Math.max(0, enemy.hp)} / ${enemy.maxHp}</span>
+                        </div>
+                        <div class="w-full bg-slate-800 rounded-full h-2.5 overflow-hidden border border-slate-700">
+                            <div class="${isBoss ? 'bg-gradient-to-r from-red-600 to-amber-500' : 'bg-red-500'} h-2.5 rounded-full transition-all duration-300" style="width: ${Math.max(0, (enemy.hp / enemy.maxHp) * 100)}%"></div>
+                        </div>
+                    </div>
+                `;
+                enemyContainer.appendChild(card);
+            });
+        }
+
+        // --- 아군 클릭 이벤트 ---
+        function handleAllyClick(targetAllyId) {
+            if (gameState.currentTurn !== 'ALLY' || gameState.isProcessing) return;
+
+            const targetAlly = gameState.allies.find(a => a.id === targetAllyId);
+            if (!targetAlly || targetAlly.hp <= 0) return;
+
+            if (selectedSkillCaster) {
+                const caster = selectedSkillCaster;
+                selectedSkillCaster = null;
+                
+                // 만약 선택된 캐스터가 궁극기 사용 상태인 경우 (게이지가 찼고 자기 자신 또는 동료 선택)
+                if (caster.ultimateGauge >= caster.maxGauge && caster.job === 'warrior') {
+                    executeUltimate(caster.id, targetAllyId);
+                } else {
+                    executeSkill(caster.id, targetAllyId);
+                }
+                return;
+            }
+
+            if (!targetAlly.hasActed) {
+                selectedSkillCaster = targetAlly;
+                if (targetAlly.ultimateGauge >= targetAlly.maxGauge) {
+                    if (targetAlly.job === 'warrior') {
+                        addLog(`⭐ <b>${targetAlly.name}</b>의 궁극기 [전사의 함성] 대상(아무 아군이나 클릭)을 선택하세요!`, 'text-amber-300 font-bold');
+                    } else if (targetAlly.job === 'mage') {
+                        // 마법사 궁극기는 적을 타겟팅해야 하므로 적 클릭 유도 안내
+                        selectedSkillCaster = null;
+                        executeUltimate(targetAlly.id, null);
+                        return;
+                    } else if (targetAlly.job === 'archer') {
+                        addLog(`⭐ <b>${targetAlly.name}</b>의 궁극기 [집중 저격] 대상(적군)을 드래그하거나 적을 클릭하세요! 또는 아군 버프를 계속 사용하려면 다른 아군 클릭`, 'text-amber-300 font-bold');
+                        return;
+                    }
+                } else {
+                    addLog(`✨ <b>${targetAlly.name}</b>이(가) 사용할 기본 스킬 대상(자신 또는 동료)을 클릭하세요.`, 'text-indigo-300');
+                }
+                updateUI();
+            }
+        }
+
+        // --- 버프/회복 스킬 적용 ---
+        function executeSkill(casterId, targetId) {
+            gameState.isProcessing = true;
+            const caster = gameState.allies.find(a => a.id === casterId);
+            const target = gameState.allies.find(a => a.id === targetId);
+
+            if (!caster || !target || caster.hasActed || caster.hp <= 0 || target.hp <= 0) {
+                gameState.isProcessing = false;
+                return;
+            }
+
+            caster.hasActed = true;
+            caster.ultimateGauge = Math.min(caster.maxGauge, caster.ultimateGauge + 1);
+
+            if (caster.job === 'warrior') {
+                const boost = 6;
+                target.def += boost;
+                target.buffTurns = 3;
+                showEffectPopup(target.id, `+${boost} DEF`, 'buff');
+                addLog(`🛡️ [아군 버프] <b>${caster.name}</b>이(가) <b>${target.name}</b>에게 철벽 방어를 시전하여 방어력을 <span class="text-blue-400 font-bold">+${boost}</span> 올렸습니다! (3턴 지속)`);
+            } else if (caster.job === 'mage') {
+                const healAmt = 35;
+                const oldHp = target.hp;
+                target.hp = Math.min(target.maxHp, target.hp + healAmt);
+                const actualHeal = target.hp - oldHp;
+                showEffectPopup(target.id, `+${actualHeal}`, 'heal');
+                addLog(`💚 [아군 치유] <b>${caster.name}</b>이(가) <b>${target.name}</b>의 체력을 <span class="text-emerald-400 font-bold">${actualHeal}</span> 회복시켰습니다!`);
+            } else if (caster.job === 'archer') {
+                const boost = 9;
+                target.atk += boost;
+                target.buffTurns = 3;
+                showEffectPopup(target.id, `+${boost} ATK`, 'buff');
+                addLog(`🎯 [아군 버프] <b>${caster.name}</b>이(가) <b>${target.name}</b>에게 집중 사격을 지원하여 공격력을 <span class="text-amber-400 font-bold">+${boost}</span> 올렸습니다! (3턴 지속)`);
+            }
+
+            triggerHitAnimation(target.id);
+            updateUI();
+            checkBattleCompletion();
+            gameState.isProcessing = false;
+        }
+
+        // --- 궁극기 실행 함수 ---
+        function executeUltimate(casterId, targetId) {
+            gameState.isProcessing = true;
+            const caster = gameState.allies.find(a => a.id === casterId);
+
+            if (!caster || caster.hasActed || caster.hp <= 0 || caster.ultimateGauge < caster.maxGauge) {
+                gameState.isProcessing = false;
+                return;
+            }
+
+            caster.hasActed = true;
+            caster.ultimateGauge = 0; // 게이지 소모
+
+            if (caster.job === 'warrior') {
+                // 전사 궁극기: 전사의 함성 (모든 아군 방어력 +15, 3턴)
+                gameState.allies.forEach(ally => {
+                    if (ally.hp > 0) {
+                        ally.def += 15;
+                        ally.buffTurns = Math.max(ally.buffTurns, 3);
+                        showEffectPopup(ally.id, `+15함성`, 'ultimate');
+                    }
+                });
+                addLog(`🔥 [궁극기 발동!] <b>${caster.name}</b>의 <b>전사의 함성</b>! 모든 아군의 방어력이 <span class="text-amber-400 font-bold">+15</span> 상승합니다! (3턴 지속)`, 'text-amber-300 font-bold');
+            } else if (caster.job === 'mage') {
+                // 마법사 궁극기: 폭발 (모든 적에게 큰 피해)
+                gameState.enemies.forEach(enemy => {
+                    if (enemy.hp > 0) {
+                        const dmg = 75 + Math.floor(Math.random() * 15);
+                        enemy.hp -= dmg;
+                        showEffectPopup(enemy.id, `-${dmg}폭발`, 'ultimate');
+                        triggerHitAnimation(enemy.id);
+                    }
+                });
+                addLog(`🔥 [궁극기 발동!] <b>${caster.name}</b>의 <b>폭발 마법</b>! 모든 적에게 거대한 마법 피해를 입혔습니다!`, 'text-amber-300 font-bold');
+            } else if (caster.job === 'archer') {
+                // 궁수 궁극기: 집중 저격 (드래그나 타겟 지정된 단일 적에게 치명타 피해)
+                const target = gameState.enemies.find(e => e.id === targetId && e.hp > 0) || gameState.enemies.find(e => e.hp > 0);
+                if (target) {
+                    const dmg = 95 + Math.floor(Math.random() * 20);
+                    target.hp -= dmg;
+                    showEffectPopup(target.id, `-${dmg}저격`, 'ultimate');
+                    triggerHitAnimation(target.id);
+                    addLog(`🔥 [궁극기 발동!] <b>${caster.name}</b>의 <b>궁극 집중 저격</b>! [적] <b>${target.name}</b>에게 <span class="text-red-400 font-bold">${dmg}</span>의 치명적인 피해를 입혔습니다!`, 'text-amber-300 font-bold');
+                }
+            }
+
+            updateUI();
+            checkBattleCompletion();
+            gameState.isProcessing = false;
+        }
+
+        // --- 드래그 앤 드롭 핸들러 ---
+        function handleDragStart(e) {
+            if (gameState.currentTurn !== 'ALLY' || gameState.isProcessing) {
+                e.preventDefault();
+                return;
+            }
+            selectedSkillCaster = null;
+            draggedAllyId = this.id;
+            this.classList.add('dragging');
+            e.dataTransfer.setData('text/plain', this.id);
+            e.dataTransfer.effectAllowed = 'move';
+        }
+
+        function handleDragEnd(e) {
+            this.classList.remove('dragging');
+            draggedAllyId = null;
+        }
+
+        function handleDragOver(e) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+        }
+
+        function handleDragEnter(e) {
+            e.preventDefault();
+            if (draggedAllyId) this.classList.add('drop-target');
+        }
+
+        function handleDragleave(e) {
+            this.classList.remove('drop-target');
+        }
+
+        function handleDrop(e) {
+            e.preventDefault();
+            this.classList.remove('drop-target');
+            if (!draggedAllyId || gameState.isProcessing) return;
+
+            const attacker = gameState.allies.find(a => a.id === draggedAllyId);
+            if (attacker && attacker.ultimateGauge >= attacker.maxGauge && attacker.job === 'archer') {
+                // 궁수가 게이지가 가득 찬 상태에서 적에게 드래그하면 궁극기(저격) 발동!
+                executeUltimate(draggedAllyId, this.id);
+            } else {
+                executeAttack(draggedAllyId, this.id);
+            }
+        }
+
+        // --- 공격 실행 ---
+        function executeAttack(attackerId, targetId) {
+            gameState.isProcessing = true;
+            const attacker = gameState.allies.find(a => a.id === attackerId);
+            const target = gameState.enemies.find(e => e.id === targetId);
+
+            if (!attacker || !target || attacker.hasActed || attacker.hp <= 0 || target.hp <= 0) {
+                gameState.isProcessing = false;
+                return;
+            }
+
+            const damage = Math.max(1, attacker.atk - target.def + Math.floor(Math.random() * 5) - 2);
+            target.hp -= damage;
+            attacker.hasActed = true;
+            attacker.ultimateGauge = Math.min(attacker.maxGauge, attacker.ultimateGauge + 1);
+
+            showEffectPopup(targetId, `-${damage}`, 'damage');
+            triggerHitAnimation(targetId);
+
+            addLog(`⚔️ [아군 공격] <b>${attacker.name}</b>이(가) [적] <b>${target.name}</b>을(를) 공격하여 <span class="text-red-400 font-bold">${damage}</span>의 피해를 주었습니다!`);
+
+            if (target.hp <= 0) {
+                addLog(`☠️ [적 처치] <b>${target.name}</b>이(가) 쓰러졌습니다!`, 'text-slate-400');
+            }
+
+            updateUI();
+            checkBattleCompletion();
+            gameState.isProcessing = false;
+        }
+
+        // --- 턴 종료 & 적군 AI ---
+        function endTurn() {
+            if (gameState.currentTurn !== 'ALLY' || gameState.isProcessing) return;
+
+            selectedSkillCaster = null;
+            gameState.currentTurn = 'ENEMY';
+            updateUI();
+            processEnemyTurn();
+        }
+
+        async function processEnemyTurn() {
+            gameState.isProcessing = true;
+            addLog('🤖 적군의 반격 턴이 시작되었습니다...', 'text-red-400 font-bold');
+
+            const aliveEnemies = gameState.enemies.filter(e => e.hp > 0);
+
+            for (const enemy of aliveEnemies) {
+                if (checkBattleCompletion()) break;
+
+                const aliveAllies = gameState.allies.filter(a => a.hp > 0);
+                if (aliveAllies.length === 0) break;
+
+                await new Promise(r => setTimeout(r, 700));
+
+                const target = aliveAllies[Math.floor(Math.random() * aliveAllies.length)];
+                const damage = Math.max(1, enemy.atk - target.def + Math.floor(Math.random() * 4) - 2);
+                target.hp -= damage;
+
+                showEffectPopup(target.id, `-${damage}`, 'damage');
+                triggerHitAnimation(target.id);
+
+                addLog(`💥 [적 공격] <b>${enemy.name}</b>이(가) [아군] <b>${target.name}</b>을(를) 공격하여 <span class="text-red-400 font-bold">${damage}</span>의 피해를 입혔습니다!`);
+
+                if (target.hp <= 0) {
+                    addLog(`💀 [아군 전멸] <b>${target.name}</b>이(가) 전투 불능이 되었습니다!`, 'text-red-500 font-bold');
+                }
+
+                updateUI();
+            }
+
+            await new Promise(r => setTimeout(r, 500));
+
+            if (!checkBattleCompletion()) {
+                gameState.currentTurn = 'ALLY';
+                gameState.turnNumber++;
+
+                gameState.allies.forEach(a => {
+                    a.hasActed = false;
+                    if (a.buffTurns > 0) {
+                        a.buffTurns--;
+                        if (a.buffTurns === 0) {
+                            a.atk = a.baseAtk;
+                            a.def = a.baseDef;
+                            addLog(`⌛ <b>${a.name}</b>의 강화 버프 효과가 만료되어 원래 능력치로 돌아왔습니다.`, 'text-slate-400');
+                        }
+                    }
+                });
+
+                addLog(`--- 턴 ${gameState.turnNumber} 시작 (아군 턴) ---`, 'text-amber-400 font-bold');
+                updateUI();
+            }
+
+            gameState.isProcessing = false;
+        }
+
+        // --- 전투 상태 체크 ---
+        function checkBattleCompletion() {
+            const aliveAllies = gameState.allies.filter(a => a.hp > 0);
+            const aliveEnemies = gameState.enemies.filter(e => e.hp > 0);
+
+            if (aliveEnemies.length === 0) {
+                if (gameState.stage === 1) {
+                    showStageClearPrompt();
+                } else {
+                    showGameResultModal(true, '최종 승리!', '축하합니다! 강력한 보스 암흑 군주를 물리치고 세상을 구했습니다!');
+                }
+                return true;
+            } else if (aliveAllies.length === 0) {
+                showGameResultModal(false, '전투 패배...', '아군 부대가 모두 쓰러졌습니다. 다시 도전해 보세요.');
+                return true;
+            }
+            return false;
+        }
+
+        // --- 스테이지 클리어 모달 ---
+        function showStageClearPrompt() {
+            const modal = document.getElementById('result-modal');
+            document.getElementById('modal-icon').innerText = '🎉';
+            const title = document.getElementById('modal-title');
+            title.innerText = '스테이지 1 클리어!';
+            title.className = 'text-2xl font-black text-amber-400';
+            document.getElementById('modal-message').innerText = '적 전사 부대를 모두 처치했습니다! 다음 스테이지(보스전)로 넘어가시겠습니까?';
+
+            document.getElementById('modal-buttons').innerHTML = `
+                <button onclick="initGame(2)" class="w-full py-3 bg-red-600 hover:bg-red-500 text-white font-bold rounded-xl shadow-lg transition">
+                    🔥 네, 보스 스테이지로 이동합니다!
+                </button>
+                <button onclick="initGame(1)" class="w-full py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold rounded-xl transition text-sm">
+                    🔄 스테이지 1 다시 시작
+                </button>
+            `;
+            modal.classList.remove('hidden');
+        }
+
+        // --- 결과 모달 ---
+        function showGameResultModal(isVictory, headerText, messageText) {
+            const modal = document.getElementById('result-modal');
+            document.getElementById('modal-icon').innerText = isVictory ? '🏆' : '💀';
+            const title = document.getElementById('modal-title');
+            title.innerText = headerText;
+            title.className = isVictory ? 'text-2xl font-black text-amber-400' : 'text-2xl font-black text-red-500';
+            document.getElementById('modal-message').innerText = messageText;
+
+            document.getElementById('modal-buttons').innerHTML = `
+                <button onclick="initGame(1)" class="w-full py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-xl shadow-lg transition">
+                    새 게임 시작
+                </button>
+            `;
+            modal.classList.remove('hidden');
+        }
+
+        // --- 이펙트 및 유틸 ---
+        function showEffectPopup(elementId, text, type) {
+            const el = document.getElementById(elementId);
+            if (!el) return;
+            const rect = el.getBoundingClientRect();
+            const popup = document.createElement('div');
+            popup.className = `damage-popup ${type}`;
+            popup.innerText = text;
+            popup.style.left = `${rect.left + rect.width / 2 - 15}px`;
+            popup.style.top = `${rect.top + 10}px`;
+            document.body.appendChild(popup);
+            setTimeout(() => popup.remove(), 800);
+        }
+
+        function triggerHitAnimation(elementId) {
+            const el = document.getElementById(elementId);
+            if (!el) return;
+            el.classList.add('hit-animation');
+            setTimeout(() => el.classList.remove('hit-animation'), 300);
+        }
+
+        function addLog(msg, className = 'text-slate-300') {
+            const logContainer = document.getElementById('battle-log');
+            if (!logContainer) return;
+            const item = document.createElement('div');
+            item.className = className;
+            item.innerHTML = msg;
+            logContainer.appendChild(item);
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+
+        window.onload = function() {
+            initGame(1);
+        };
+    </script>
+</body>
+</html>
